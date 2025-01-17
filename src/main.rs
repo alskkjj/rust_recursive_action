@@ -236,7 +236,9 @@ struct Cli {
 
 fn main() {
     tr::tr_init!("./i18n");
-    {
+
+    let _test_i18n = false;
+    if _test_i18n {
         let f = std::fs::File::open("i18n/mo/zh/rust_recursive_clean.mo")
             .expect("can't load i18n info");
 
