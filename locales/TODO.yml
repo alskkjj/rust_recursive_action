@@ -1,0 +1,30 @@
+'# root path: {}':
+  en: '# root path: {}'
+Failed make directory "{0}" canonicalized.:
+  en: ''
+OsString to String failed.:
+  en: ''
+PathBuf to &str error:
+  en: PathBuf to &str error
+Start `cargo clean` failed.:
+  en: ''
+_version: 2
+at least one path buf:
+  en: at least one path buf
+directly run cargo as subprocess.:
+  en: ''
+dry run and output actions:
+  en: dry run and output actions
+generating bash-like commands.:
+  en: ''
+get file name failed:
+  en: get file name failed
+get file name failed.:
+  en: ''
+get metadata error:
+  en: get metadata error
+read directory failed "{0}":
+  en: read directory failed "{0}"
+read directory failed.:
+  en: ''
+

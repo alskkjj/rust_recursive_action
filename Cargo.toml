@@ -5,7 +5,5 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.26", features = ["cargo", "derive"] }
-gettext = "0.4.0"
-# gettext-rs = "0.7.2"
-tr = { version = "0.1.10", features = ["gettext"] }
+rust-i18n = "3.1.2"
 # regex = "1.11.1"

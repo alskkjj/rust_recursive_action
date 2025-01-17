@@ -4,7 +4,8 @@ use std::env;
 use std::process::Command;
 use std::string::FromUtf8Error;
 use clap::{Parser, ValueEnum, builder::PossibleValue};
-use tr::*;
+use rust_i18n::t;
+
 
 #[derive(Debug, )]
 enum ToUtf8Error {
@@ -33,7 +34,7 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
     let mut marked_pathes = Vec::<PathBuf>::new();
 
     let path = std::fs::canonicalize(&path_str)
-        .expect(&tr!(
+        .expect(&t!(
                 "Failed make directory \"{0}\" canonicalized.",
                 path_str));
 
@@ -46,24 +47,24 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
         let dir_path = dir_pathes
             .last()
-            .expect(&tr!("at least one path buf"));
+            .expect(&t!("at least one path buf"));
 
         let sub_items = fs::read_dir(dir_path)
             .expect(
-                &tr!("read directory failed \"{0}\"", 
+                &t!("read directory failed \"{0}\"", 
                     path_str))
             .map(|a| {
-                a.expect(&tr!("read directory failed."))
+                a.expect(&t!("read directory failed."))
                     .path()
             })
         .collect::<Vec<PathBuf>>();
 
         if sub_items.iter().any(|a| {
             a.as_path().file_name()
-                .expect(&tr!("get file name failed"))
+                .expect(&t!("get file name failed"))
                 .to_str()
                 .expect(
-                    &tr!("OsString to String failed.")) == "Cargo.toml"
+                    &t!("OsString to String failed.")) == "Cargo.toml"
         }) {
            marked_pathes.push(dir_pathes.last().unwrap().clone());
            marked_cargo_dir = true;
@@ -72,20 +73,20 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
         let sub_items = sub_items.iter()
             .filter(|a| {
                 !a.as_path().file_name()
-                    .expect(&tr!("get file name failed."))
+                    .expect(&t!("get file name failed."))
                     .to_str()
                     .expect(
-                        &tr!("OsString to String failed."))
+                        &t!("OsString to String failed."))
                     .starts_with(".") 
                     && a.metadata()
-                    .expect(&tr!("get metadata error"))
+                    .expect(&t!("get metadata error"))
                     .is_dir()
             })
         .filter(|a| {
             let file_name = a.as_path().file_name()
-                .expect(&tr!("get file name failed."))
+                .expect(&t!("get file name failed."))
                 .to_str()
-                .expect(&tr!("OsString to String failed."));
+                .expect(&t!("OsString to String failed."));
             if marked_cargo_dir {
                 file_name != "target" 
                 && file_name != "src" 
@@ -145,18 +146,18 @@ impl ValueEnum for GeneratingType {
             Self::BashCommands => {
                 PossibleValue::new("bash-commands")
                     .help(
-                        &tr!("generating bash-like commands."))
+                        &t!("generating bash-like commands."))
                     .aliases(["cmd", "cmds", "bash_cmds", "bash_commands"])
             }
             Self::RunAsSubprocess => {
                 PossibleValue::new("run-as-subprocess")
                     .help(
-                        &tr!("directly run cargo as subprocess."))
+                        &t!("directly run cargo as subprocess."))
                     .aliases(["direct", "subprocess", "directly"])
             }
             Self::DryRunDebug => {
                 PossibleValue::new("dry-run-debug")
-                    .help(&tr!("dry run and output actions"))
+                    .help(&t!("dry run and output actions"))
                     .aliases(["dry_run", "dry-run", "dr"])
 
             }
@@ -189,9 +190,9 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType) -> Result<(), Process
     let old_dir = env::current_dir()?;
 
     let old_dir_str = old_dir.to_str()
-        .expect(&tr!("PathBuf to &str error"));
+        .expect(&t!("PathBuf to &str error"));
     let dest_dir_str = cargo_dir.to_str()
-        .expect(&tr!("PathBuf to &str error"));
+        .expect(&t!("PathBuf to &str error"));
 
     match ge_ty {
         GeneratingType::BashCommands => {
@@ -205,7 +206,7 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType) -> Result<(), Process
 
             let output = Command::new("cargo").arg("clean")
                 .output()
-                .expect(&tr!("Start `cargo clean` failed."));
+                .expect(&t!("Start `cargo clean` failed."));
             if !output.status.success() {
                 env::set_current_dir(old_dir)?;
                 return Err(ProcessDirError::ProcessExitError(ProcessExitError {
@@ -260,7 +261,7 @@ fn main() {
         || ge_ty == GeneratingType::DryRunDebug {
 
         println!("{}",
-            tr!("# root path: {}", 
+            t!("# root path: {}", 
                 format!("{:?}", fs::canonicalize(path_str).unwrap()))
             );
     }
