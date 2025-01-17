@@ -1,0 +1,11 @@
+[package]
+name = "rust_recursively_action"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["cargo", "derive"] }
+gettext = "0.4.0"
+# gettext-rs = "0.7.2"
+tr = { version = "0.1.10", features = ["gettext"] }
+# regex = "1.11.1"
