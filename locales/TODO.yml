@@ -1,5 +1,6 @@
 '# root path: {}':
   en: '# root path: {}'
+  zh: '# 根目录位于: {}'
 Failed make directory "{0}" canonicalized.:
   en: ''
 OsString to String failed.:

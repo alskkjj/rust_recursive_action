@@ -1,11 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
-use std::env;
+use std::{env, io,
+collections::HashSet};
+
 use std::process::Command;
 use std::string::FromUtf8Error;
 use clap::{Parser, ValueEnum, builder::PossibleValue};
-use rust_i18n::t;
 
+use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
+use unic_langid::{langid, LanguageIdentifier};
+use sys_locale;
 
 #[derive(Debug, )]
 enum ToUtf8Error {
@@ -232,22 +236,139 @@ struct Cli {
     target_dir: Option<String>,
     // generaty types: bash commands(default), output debug(dry run), direct run as subprocess.
     #[arg(short, long, value_enum, default_value_t)]
-    generating_type: GeneratingType
+    generating_type: GeneratingType,
+
+    #[arg(long = "ui_lang")]
+    ui_language: Option<String>,
+}
+
+fn get_available_locales(dir: &PathBuf) -> Result<Vec<LanguageIdentifier>, io::Error> {
+    let mut locales: Vec<LanguageIdentifier> = Vec::new();
+
+    let read_dir_iter = fs::read_dir(dir)?;
+    for entry in read_dir_iter.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(file_name) = path.file_name() {
+                if let Some(file_name) = file_name.to_str() {
+                    let langid = file_name.parse().expect("Parsing locale name failed.");
+                    locales.push(langid);
+                }
+            }
+        }
+    }
+    Ok(locales)
+}
+
+#[derive(Debug, )]
+enum LanguageChoiceError {
+    IoError(io::Error),
+    NoSuchLanguage(String, ),
+    NoFallbackLanguage(String, ),
+    NoLanguageFilesAt(String),
+}
+
+impl From<io::Error> for LanguageChoiceError {
+    fn from(e: io::Error) -> Self {
+        Self::IoError(e)
+    }
+}
+
+fn try_match_language(desired_loc: Option<&LanguageIdentifier>,
+    fallback: &LanguageIdentifier, lang_dir: &PathBuf) 
+    -> std::result::Result<LanguageIdentifier, LanguageChoiceError> {
+        let avaliable_lang_ids = get_available_locales(&lang_dir)?;
+        let avaliable_lang_ids = 
+            avaliable_lang_ids
+            .iter().collect::<HashSet<_>>();
+
+
+        if let Some(li) = desired_loc {
+            if avaliable_lang_ids.contains(&li) { // if it in directory use it directly
+                return Ok(li.clone());
+            } else if avaliable_lang_ids.iter().any( 
+                |a| { a.matches(&li, false, false) }) { // use
+                                                                                                                    // LanguageIdentifier::matches 
+                Ok(avaliable_lang_ids.iter()
+                    .filter(|a| { a.matches(&li, false, false) })
+                    .next().unwrap().clone().clone())
+            } else if avaliable_lang_ids.iter().any( 
+                |a| { a.matches(&li, true, false) }) { // use
+                                                                                                                   // LanguageIdentifier::matches 
+                Ok(avaliable_lang_ids.iter()
+                    .filter(|a| { a.matches(&li, true, false) })
+                    .next().unwrap().clone().clone())
+            } else if avaliable_lang_ids.iter().any( 
+                |a| { a.matches(&li, false, true) }) { // use
+                                                                                                                   // LanguageIdentifier::matches 
+                Ok(avaliable_lang_ids.iter()
+                    .filter(|a| { a.matches(&li, false, true) })
+                    .next().unwrap().clone().clone())
+            } else if avaliable_lang_ids.iter().any( 
+                |a| { a.matches(&li, true, true) }) { // use
+                                                                                                                  // LanguageIdentifier::matches 
+                Ok(avaliable_lang_ids.iter()
+                    .filter(|a| { a.matches(&li, true, true) })
+                    .next().unwrap().clone().clone())
+            } else {
+                Err(LanguageChoiceError::NoSuchLanguage(li.to_string()))
+            }
+        } else if avaliable_lang_ids.contains(&fallback) {
+            return Ok(fallback.clone());
+        } else {
+            Err(LanguageChoiceError::NoFallbackLanguage(fallback.to_string()))
+        }
+    }
+
+fn resolve_desired_lang(lang_name: Option<String>, lang_dir: Option<String>) 
+    -> Result<LanguageIdentifier, LanguageChoiceError> {
+        let default_lang_dir_str = "i18n/fluent".to_owned();
+        let lang_dir = lang_dir.or(Some(default_lang_dir_str)).unwrap();
+        let default_lang_dir_str = lang_dir.clone();
+        let lang_dir = {
+            let mut tmp = env::current_dir()
+                .expect("Get current dir failed.");
+            tmp.extend(lang_dir.split("/"));
+            tmp
+        };
+
+        if !lang_dir.exists() || !lang_dir.is_dir() {
+            return Err(LanguageChoiceError::NoLanguageFilesAt(default_lang_dir_str));
+        }
+
+
+        let default_locale: LanguageIdentifier = 
+            if sys_locale::get_locale().is_some() {
+                    let s = sys_locale::get_locale().unwrap();
+                    s.parse()
+                        .expect("locale string to locale identifier failed.")
+            } else { langid!("en") };
+
+        let lang_loc = match lang_name {
+            Some(ln) => {
+                match ln.parse::<LanguageIdentifier>() {
+                    Ok(li) => {
+                        try_match_language(Some(&li), &default_locale, &lang_dir)?
+                    },
+                    Err(e) => {
+                        eprintln!("Wraning: {:?}", e);
+                        try_match_language(None, &default_locale, &lang_dir)?
+                    }
+                }
+            },
+            None => {  
+                try_match_language(None, &default_locale, &lang_dir)?
+            }
+        };
+        Ok(lang_loc)
+}
+
+struct LanguageSystem<R> {
+    bundle: fluent::FluentBundle<R>,
+    current_lang: LanguageIdentifier,
 }
 
 fn main() {
-    tr::tr_init!("./i18n");
-
-    let _test_i18n = false;
-    if _test_i18n {
-        let f = std::fs::File::open("i18n/mo/zh/rust_recursive_clean.mo")
-            .expect("can't load i18n info");
-
-        let catalog = gettext::Catalog::parse(f).expect("could not parse the catalog");
-        set_translator!(catalog);
-    }
-
-
     let cli = Cli::parse();
     let path_str = cli.target_dir.or(Some("./".to_owned())).unwrap();
 
