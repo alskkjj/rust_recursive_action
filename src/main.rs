@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::{env, io,
 collections::HashSet};
+use std::cell::Cell;
 
 use std::process::Command;
 use std::string::FromUtf8Error;
@@ -37,10 +38,13 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
     let mut marked_pathes = Vec::<PathBuf>::new();
 
-    let path = std::fs::canonicalize(&path_str)
-        .expect(&t!(
+    let path = std::fs::canonicalize(&path_str);
+    if path.is_err() {
+        let mut fa = FluentArgs::new();
+        panic!(&t!(
                 "Failed make directory \"{0}\" canonicalized.",
                 path_str));
+    }
 
     dir_pathes.push(path);
     dir_sizes.push(1);
@@ -320,20 +324,15 @@ fn try_match_language(desired_loc: Option<&LanguageIdentifier>,
         }
     }
 
-fn resolve_desired_lang(lang_name: Option<String>, lang_dir: Option<String>) 
-    -> Result<LanguageIdentifier, LanguageChoiceError> {
-        let default_lang_dir_str = "i18n/fluent".to_owned();
-        let lang_dir = lang_dir.or(Some(default_lang_dir_str)).unwrap();
-        let default_lang_dir_str = lang_dir.clone();
-        let lang_dir = {
-            let mut tmp = env::current_dir()
-                .expect("Get current dir failed.");
-            tmp.extend(lang_dir.split("/"));
-            tmp
-        };
-
+fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf) 
+    -> Result<(LanguageIdentifier, String), LanguageChoiceError> {
         if !lang_dir.exists() || !lang_dir.is_dir() {
-            return Err(LanguageChoiceError::NoLanguageFilesAt(default_lang_dir_str));
+            return Err(LanguageChoiceError::NoLanguageFilesAt(
+                    lang_dir.canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+                    ));
         }
 
 
@@ -344,8 +343,10 @@ fn resolve_desired_lang(lang_name: Option<String>, lang_dir: Option<String>)
                         .expect("locale string to locale identifier failed.")
             } else { langid!("en") };
 
+        let deduced_lang_name: String;
         let lang_loc = match lang_name {
             Some(ln) => {
+                deduced_lang_name = ln.clone();
                 match ln.parse::<LanguageIdentifier>() {
                     Ok(li) => {
                         try_match_language(Some(&li), &default_locale, &lang_dir)?
@@ -357,19 +358,56 @@ fn resolve_desired_lang(lang_name: Option<String>, lang_dir: Option<String>)
                 }
             },
             None => {  
+                deduced_lang_name = default_locale.to_string();
                 try_match_language(None, &default_locale, &lang_dir)?
             }
         };
-        Ok(lang_loc)
+        Ok((lang_loc, deduced_lang_name))
 }
 
 struct LanguageSystem<R> {
-    bundle: fluent::FluentBundle<R>,
-    current_lang: LanguageIdentifier,
+    pub bundle: fluent::FluentBundle<R>,
+    pub current_lang: Cell<LanguageIdentifier>,
+    pub dir: PathBuf,
 }
+
+impl <R> LanguageSystem<R> {
+    pub fn new(desired_lang: Option<String>, lang_dir: Option<String>) -> Self {
+
+        let default_lang_dir_str = "i18n/fluent".to_owned();
+        let lang_dir = lang_dir.or(Some(default_lang_dir_str)).unwrap();
+        let lang_dir = {
+            let mut tmp = env::current_dir()
+                .expect("Get current dir failed.");
+            tmp.extend(lang_dir.split("/"));
+            tmp
+        };
+        let dir = lang_dir.clone();
+
+
+        let lang = resolve_desired_lang(desired_lang.clone(), &lang_dir)
+            .expect(&format!("fetch language {:?} failed.", desired_lang));
+    
+
+        let v = get_available_locales(&lang_dir).expect(
+            &format!("LanguageSystem::new: read dir {} failed.", fs::canonicalize(lang_dir).unwrap().to_string_lossy().into_owned() ));
+        let bundle = FluentBundle::new(v);
+        
+
+
+        Self {
+            bundle,
+            current_lang: Cell::new(lang.0),
+            dir,
+        }
+    }
+}
+
 
 fn main() {
     let cli = Cli::parse();
+    let lan = cli.ui_language;
+    let lan_sys = LanguageSystem::new(lan, None);
     let path_str = cli.target_dir.or(Some("./".to_owned())).unwrap();
 
     let ge_ty = cli.generating_type;
