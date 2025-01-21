@@ -1,0 +1,12 @@
+file-path-canonicalized-failed = 获得全路径{ $path_dir }失败。
+root-path = 根目录: { $root_path }。
+read-directory-failed = 读取文件夹{ $dir_path }失败。
+read-directory-entry-failed = 读取文件夹条目失败。
+get-file-name-failed = 读取文件名称失败。
+osstring-to-string-failed = OsString转换为String失败。
+get-metadata-error = 获取文件元数据失败。
+generate-bash-like-cmds-helper = 生成bash-like指令。
+directly-run-helper = 作为子进程直接执行。
+dry-run-helper = 仅输出动作序列。
+pathbuf-to-str-failed = PathBuf转为String失败。
+start-cargo-subcommand-failed = 启动Cargo { $subcommand } 失败。

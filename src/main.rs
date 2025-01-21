@@ -2,7 +2,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::{env, io,
 collections::HashSet};
-use std::cell::Cell;
 
 use std::process::Command;
 use std::string::FromUtf8Error;
@@ -11,6 +10,9 @@ use clap::{Parser, ValueEnum, builder::PossibleValue};
 use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use unic_langid::{langid, LanguageIdentifier};
 use sys_locale;
+
+use std::sync::{Mutex, Arc};
+use std::io::Read;
 
 #[derive(Debug, )]
 enum ToUtf8Error {
@@ -40,39 +42,45 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
     let path = std::fs::canonicalize(&path_str);
     if path.is_err() {
-        let mut fa = FluentArgs::new();
-        panic!(&t!(
-                "Failed make directory \"{0}\" canonicalized.",
-                path_str));
+        panic!("{}", &build_language_fns("file-path-canonized-failed", vec![(
+                "path_dir", || {
+                    FluentValue::from(path_str)
+                }
+        )]));
     }
 
-    dir_pathes.push(path);
+    dir_pathes.push(path.unwrap());
     dir_sizes.push(1);
  
     loop {
         let mut marked_cargo_dir = false;
         if dir_pathes.is_empty() { break; }
 
+        // The algorithm has bugs if unwrap fails.
         let dir_path = dir_pathes
             .last()
-            .expect(&t!("at least one path buf"));
+            .unwrap();
 
         let sub_items = fs::read_dir(dir_path)
             .expect(
-                &t!("read directory failed \"{0}\"", 
-                    path_str))
+                &build_language_1("read-directory-failed", "dir_path", 
+                    dir_path.to_str()
+                    ))
             .map(|a| {
-                a.expect(&t!("read directory failed."))
+                a.expect(
+                    &build_language_0("read-directory-entry-failed")
+                    )
                     .path()
             })
         .collect::<Vec<PathBuf>>();
 
+
         if sub_items.iter().any(|a| {
             a.as_path().file_name()
-                .expect(&t!("get file name failed"))
+                .expect(&build_language_0("get-file-name-failed"))
                 .to_str()
                 .expect(
-                    &t!("OsString to String failed.")) == "Cargo.toml"
+                    &build_language_0("osstring-to-string-failed")) == "Cargo.toml"
         }) {
            marked_pathes.push(dir_pathes.last().unwrap().clone());
            marked_cargo_dir = true;
@@ -81,20 +89,20 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
         let sub_items = sub_items.iter()
             .filter(|a| {
                 !a.as_path().file_name()
-                    .expect(&t!("get file name failed."))
+                    .expect(&build_language_0("get-file-name-failed"))
                     .to_str()
                     .expect(
-                        &t!("OsString to String failed."))
+                        &build_language_0("osstring-to-string-failed"))
                     .starts_with(".") 
                     && a.metadata()
-                    .expect(&t!("get metadata error"))
+                    .expect(&build_language_0("get-metadata-error"))
                     .is_dir()
             })
         .filter(|a| {
             let file_name = a.as_path().file_name()
-                .expect(&t!("get file name failed."))
+                .expect(&build_language_0("get-file-name-failed"))
                 .to_str()
-                .expect(&t!("OsString to String failed."));
+                .expect(&build_language_0("osstring-to-string-failed"));
             if marked_cargo_dir {
                 file_name != "target" 
                 && file_name != "src" 
@@ -131,18 +139,6 @@ enum GeneratingType {
     DryRunDebug,
 }
 
-/*
-if args.len() >= 3 {
-    match args[2].as_ref() {
-        "cmd" | "cmds" | "bash_cmds" | "bash_cmd" | "bash_commands" => GeneratingType::BashCommands,
-        "dry_run" | "dr" => GeneratingType::DryRunDebug,
-        "direct" | "subprocess" => GeneratingType::RunAsSubprocess,
-        other => panic!("unknow generating type: {}", other)
-    }
-} else {
-    GeneratingType::default()
-};
-*/
 
 impl ValueEnum for GeneratingType {
     fn value_variants<'a>() -> &'a [Self] {
@@ -154,18 +150,18 @@ impl ValueEnum for GeneratingType {
             Self::BashCommands => {
                 PossibleValue::new("bash-commands")
                     .help(
-                        &t!("generating bash-like commands."))
+                        &build_language_0("generate-bash-like-cmds-helper"))
                     .aliases(["cmd", "cmds", "bash_cmds", "bash_commands"])
             }
             Self::RunAsSubprocess => {
                 PossibleValue::new("run-as-subprocess")
                     .help(
-                        &t!("directly run cargo as subprocess."))
+                        &build_language_0("directly-run-helper"))
                     .aliases(["direct", "subprocess", "directly"])
             }
             Self::DryRunDebug => {
                 PossibleValue::new("dry-run-debug")
-                    .help(&t!("dry run and output actions"))
+                    .help(&build_language_0("dry-run-helper"))
                     .aliases(["dry_run", "dry-run", "dr"])
 
             }
@@ -198,9 +194,9 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType) -> Result<(), Process
     let old_dir = env::current_dir()?;
 
     let old_dir_str = old_dir.to_str()
-        .expect(&t!("PathBuf to &str error"));
+        .expect(&build_language_0("pathbuf-to-str-failed"));
     let dest_dir_str = cargo_dir.to_str()
-        .expect(&t!("PathBuf to &str error"));
+        .expect(&build_language_0("pathbuf-to-str-failed"));
 
     match ge_ty {
         GeneratingType::BashCommands => {
@@ -212,9 +208,10 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType) -> Result<(), Process
         GeneratingType::RunAsSubprocess => {
             env::set_current_dir(cargo_dir)?;
 
+            let subcommand = "clean";
             let output = Command::new("cargo").arg("clean")
                 .output()
-                .expect(&t!("Start `cargo clean` failed."));
+                .expect(&build_language_1("start-cargo-subcommand-failed", "subcommand", subcommand));
             if !output.status.success() {
                 env::set_current_dir(old_dir)?;
                 return Err(ProcessDirError::ProcessExitError(ProcessExitError {
@@ -241,11 +238,9 @@ struct Cli {
     // generaty types: bash commands(default), output debug(dry run), direct run as subprocess.
     #[arg(short, long, value_enum, default_value_t)]
     generating_type: GeneratingType,
-
-    #[arg(long = "ui_lang")]
-    ui_language: Option<String>,
 }
 
+/// fluent functions
 fn get_available_locales(dir: &PathBuf) -> Result<Vec<LanguageIdentifier>, io::Error> {
     let mut locales: Vec<LanguageIdentifier> = Vec::new();
 
@@ -264,6 +259,7 @@ fn get_available_locales(dir: &PathBuf) -> Result<Vec<LanguageIdentifier>, io::E
     Ok(locales)
 }
 
+/// fluent functions
 #[derive(Debug, )]
 enum LanguageChoiceError {
     IoError(io::Error),
@@ -278,6 +274,8 @@ impl From<io::Error> for LanguageChoiceError {
     }
 }
 
+///
+/// fluent functions
 fn try_match_language(desired_loc: Option<&LanguageIdentifier>,
     fallback: &LanguageIdentifier, lang_dir: &PathBuf) 
     -> std::result::Result<LanguageIdentifier, LanguageChoiceError> {
@@ -336,12 +334,13 @@ fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf)
         }
 
 
-        let default_locale: LanguageIdentifier = 
+        let (default_locale, default_dirname): (LanguageIdentifier, String) = 
             if sys_locale::get_locale().is_some() {
                     let s = sys_locale::get_locale().unwrap();
-                    s.parse()
-                        .expect("locale string to locale identifier failed.")
-            } else { langid!("en") };
+                    eprintln!("{}", s);
+                    (s.parse()
+                        .expect("locale string to locale identifier failed."), s)
+            } else { (langid!("en"), "en".to_owned()) };
 
         let deduced_lang_name: String;
         let lang_loc = match lang_name {
@@ -358,20 +357,27 @@ fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf)
                 }
             },
             None => {  
-                deduced_lang_name = default_locale.to_string();
+                deduced_lang_name = default_dirname;
                 try_match_language(None, &default_locale, &lang_dir)?
             }
         };
         Ok((lang_loc, deduced_lang_name))
 }
 
-struct LanguageSystem<R> {
-    pub bundle: fluent::FluentBundle<R>,
-    pub current_lang: Cell<LanguageIdentifier>,
+struct LanguageSystem {
+    pub bundle: fluent::FluentBundle<FluentResource>,
+    pub current_lang: LanguageIdentifier,
     pub dir: PathBuf,
 }
 
-impl <R> LanguageSystem<R> {
+unsafe impl Sync for LanguageSystem {}
+unsafe impl Send for LanguageSystem {}
+
+use std::sync::OnceLock;
+
+static LANG: OnceLock<Mutex<Arc<LanguageSystem>>> = OnceLock::new();
+
+impl LanguageSystem {
     pub fn new(desired_lang: Option<String>, lang_dir: Option<String>) -> Self {
 
         let default_lang_dir_str = "i18n/fluent".to_owned();
@@ -385,31 +391,128 @@ impl <R> LanguageSystem<R> {
         let dir = lang_dir.clone();
 
 
-        let lang = resolve_desired_lang(desired_lang.clone(), &lang_dir)
+        let (lang, lang_dir_str) = resolve_desired_lang(desired_lang.clone(), &lang_dir)
             .expect(&format!("fetch language {:?} failed.", desired_lang));
     
 
         let v = get_available_locales(&lang_dir).expect(
             &format!("LanguageSystem::new: read dir {} failed.", fs::canonicalize(lang_dir).unwrap().to_string_lossy().into_owned() ));
-        let bundle = FluentBundle::new(v);
-        
+        let v = {
+            let mut tmp = vec![lang.clone()];
+            tmp.extend(v.into_iter().filter(|a| {*a != lang}));
+            tmp
+        };
+        let mut bundle = FluentBundle::new(v);
+            
 
+        let lang_dir = { let mut l = dir.clone(); 
+            l.push(lang_dir_str); l};
+
+        let read_dir = fs::read_dir(lang_dir)
+            .expect("read language dir failed");
+        for entry in read_dir {
+            if let Ok(dir_entry) = entry {
+                let path = dir_entry.path();
+                if path.is_file() && path.extension().is_some()
+                    && path.extension().unwrap() == "ftl" {
+                        {
+                            let mut f = fs::File::open(path)
+                                .expect("failed to open one of ftl files.");
+                            let mut s = String::new();
+                            f.read_to_string(&mut s).expect("read ftl file to string failed.");
+                            let r = FluentResource::try_new(s)
+                                .expect("Could not parse an FTL string.");
+                            bundle.add_resource(r)
+                                .expect("Failed to add FTL resources to the bundle.");
+                        }
+                }
+            }
+        }
 
         Self {
             bundle,
-            current_lang: Cell::new(lang.0),
+            current_lang: lang,
             dir,
         }
     }
 }
 
+fn build_language_0<'a>(msg_key: &str) -> String {
+    match LANG.get()
+        .expect("Uninitialized language bundle.").lock() {
+        Ok(bs) => {
+            
+            let msg = bs.bundle
+                .get_message(msg_key)
+                .expect(&format!("failed to find message {msg_key}"));
+            let mut errors = vec![];
+            let pattern = msg.value()
+                .expect("Message has no value.");
+            let v = bs.bundle.format_pattern(pattern, None, &mut errors);
+            v.to_string()
+        },
+        Err(e) => {
+            panic!("Language bundle mutext poisoned. {e}");
+        }
+    }
+}
+
+fn build_language_1<'a, T>(msg_key: &str, arg_name: &str, v: T) -> String
+    where T: Into<FluentValue<'a>> {
+    build_language(msg_key, 
+        vec![(arg_name, v.into())])
+}
+
+fn build_language_fns<'a, F>(msg_key: &str, args_pairs_builders: Vec<(&str, F)>) -> String 
+where F: FnOnce() -> FluentValue<'a>{
+    let args_pairs: Vec<_> = args_pairs_builders.into_iter()
+        .map(
+            |a| {
+            (a.0,
+             a.1())
+            }
+            )
+        .collect();
+    build_language(msg_key, args_pairs)
+}
+
+
+fn build_language<'a>(msg_key: &str, args_pairs: Vec<(&str, FluentValue)>) -> String {
+    if let Ok(bs) = LANG.get().expect("Uninitialized language bundle.").lock() {
+        let msg = bs
+            .bundle
+            .get_message(msg_key)
+            .expect("failed to find message {msg_key}");
+
+        let pattern = msg.value()
+            .expect("Message has no value");
+
+        let mut args  = FluentArgs::new();
+        for kv in args_pairs {
+            args.set(kv.0, 
+                kv.1);
+        }
+
+        let mut errors = vec![];
+        let value = bs.bundle.format_pattern(pattern, Some(&args), &mut errors);
+        value.to_string()
+    } else {
+        panic!("Language bundle mutex poisoned")
+    }
+}
 
 fn main() {
-    let cli = Cli::parse();
-    let lan = cli.ui_language;
-    let lan_sys = LanguageSystem::new(lan, None);
-    let path_str = cli.target_dir.or(Some("./".to_owned())).unwrap();
 
+    if LANG
+        .set(Mutex::new(
+                Arc::new(LanguageSystem::new(Some("zh".to_owned()), None))))
+            .is_err()  {
+                panic!("set initialized Language system failed.");
+    }
+
+
+    let cli = Cli::parse();
+    let path_str = cli.target_dir.or(Some("./".to_owned())).unwrap();
     let ge_ty = cli.generating_type;
 
     let mut failed_list = Vec::new();
@@ -418,11 +521,22 @@ fn main() {
 
     if ge_ty == GeneratingType::BashCommands 
         || ge_ty == GeneratingType::DryRunDebug {
+            let msg_key = "root-path";
+            let mut args_pairs = vec![];
 
-        println!("{}",
-            t!("# root path: {}", 
-                format!("{:?}", fs::canonicalize(path_str).unwrap()))
-            );
+            let args_pair = (
+                    "root_path",
+                    FluentValue::from({
+                            let t = fs::canonicalize(&path_str)
+                                .unwrap();
+                            let t = t.as_path()
+                                .to_str()
+                                .unwrap();
+                            t.to_owned()
+                        })
+                );
+            args_pairs.push(args_pair);
+            println!("{}", build_language(msg_key, args_pairs));
     }
 
     marked_pathes

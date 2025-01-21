@@ -1,2 +1,12 @@
 file-path-canonicalized-failed = Failed to make path { $path_dir } canonizalized.
-
+root-path = "# Root Path: { $root_path }"
+read-directory-failed = Read directory { $dir_path } failed.
+read-directory-entry-failed = Read directory entry failed.
+get-file-name-failed = Get file name failed.
+osstring-to-string-failed = Converts OsString to String failed.
+get-metadata-error = Get file's metadata error.
+generate-bash-like-cmds-helper = Generating bash-like commands.
+directly-run-helper = Directly run cargo as a subproecss.
+dry-run-helper = Dry run and output the actions.
+pathbuf-to-str-failed = Converts PathBuf to String failed.
+start-cargo-subcommand-failed = Start `Cargo { $subcommand }` failed.
