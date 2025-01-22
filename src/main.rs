@@ -163,7 +163,6 @@ impl ValueEnum for GeneratingType {
                 PossibleValue::new("dry-run-debug")
                     .help(&build_language_0("dry-run-helper"))
                     .aliases(["dry_run", "dry-run", "dr"])
-
             }
         })
     }
@@ -478,7 +477,7 @@ fn main() {
 
     if LANG
         .set(Mutex::new(
-                Arc::new(LanguageSystem::new(Some("zh".to_owned()), None))))
+                Arc::new(LanguageSystem::new(None, None))))
             .is_err()  {
                 panic!("set initialized Language system failed.");
     }
