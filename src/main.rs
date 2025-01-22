@@ -240,24 +240,6 @@ struct Cli {
     generating_type: GeneratingType,
 }
 
-/// fluent functions
-fn get_available_locales(dir: &PathBuf) -> Result<Vec<LanguageIdentifier>, io::Error> {
-    let mut locales: Vec<LanguageIdentifier> = Vec::new();
-
-    let read_dir_iter = fs::read_dir(dir)?;
-    for entry in read_dir_iter.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(file_name) = path.file_name() {
-                if let Some(file_name) = file_name.to_str() {
-                    let langid = file_name.parse().expect("Parsing locale name failed.");
-                    locales.push(langid);
-                }
-            }
-        }
-    }
-    Ok(locales)
-}
 
 /// fluent functions
 #[derive(Debug, )]
@@ -266,6 +248,7 @@ enum LanguageChoiceError {
     NoSuchLanguage(String, ),
     NoFallbackLanguage(String, ),
     NoLanguageFilesAt(String),
+    LanguageNegotiatedFailed(String, Vec<String>, ),
 }
 
 impl From<io::Error> for LanguageChoiceError {
@@ -274,56 +257,25 @@ impl From<io::Error> for LanguageChoiceError {
     }
 }
 
-///
-/// fluent functions
-fn try_match_language(desired_loc: Option<&LanguageIdentifier>,
-    fallback: &LanguageIdentifier, lang_dir: &PathBuf) 
-    -> std::result::Result<LanguageIdentifier, LanguageChoiceError> {
-        let avaliable_lang_ids = get_available_locales(&lang_dir)?;
-        let avaliable_lang_ids = 
-            avaliable_lang_ids
-            .iter().collect::<HashSet<_>>();
+fn language_matches_score(l1: &LanguageIdentifier, l2: &LanguageIdentifier) -> u8 {
+    let mut base = 0u8;
+    base |= if l1.matches(l2, false, false) { 0b1000 } else { 0 };
+    base |= if l1.matches(l2, false, true) { 0b0100 } else { 0 };
+    base |= if l1.matches(l2, true, false) { 0b0010 } else { 0 };
+    base |= if l1.matches(l2, true, true) { 0b0001 } else { 0 };
+    base
+}
 
-
-        if let Some(li) = desired_loc {
-            if avaliable_lang_ids.contains(&li) { // if it in directory use it directly
-                return Ok(li.clone());
-            } else if avaliable_lang_ids.iter().any( 
-                |a| { a.matches(&li, false, false) }) { // use
-                                                                                                                    // LanguageIdentifier::matches 
-                Ok(avaliable_lang_ids.iter()
-                    .filter(|a| { a.matches(&li, false, false) })
-                    .next().unwrap().clone().clone())
-            } else if avaliable_lang_ids.iter().any( 
-                |a| { a.matches(&li, true, false) }) { // use
-                                                                                                                   // LanguageIdentifier::matches 
-                Ok(avaliable_lang_ids.iter()
-                    .filter(|a| { a.matches(&li, true, false) })
-                    .next().unwrap().clone().clone())
-            } else if avaliable_lang_ids.iter().any( 
-                |a| { a.matches(&li, false, true) }) { // use
-                                                                                                                   // LanguageIdentifier::matches 
-                Ok(avaliable_lang_ids.iter()
-                    .filter(|a| { a.matches(&li, false, true) })
-                    .next().unwrap().clone().clone())
-            } else if avaliable_lang_ids.iter().any( 
-                |a| { a.matches(&li, true, true) }) { // use
-                                                                                                                  // LanguageIdentifier::matches 
-                Ok(avaliable_lang_ids.iter()
-                    .filter(|a| { a.matches(&li, true, true) })
-                    .next().unwrap().clone().clone())
-            } else {
-                Err(LanguageChoiceError::NoSuchLanguage(li.to_string()))
-            }
-        } else if avaliable_lang_ids.contains(&fallback) {
-            return Ok(fallback.clone());
-        } else {
-            Err(LanguageChoiceError::NoFallbackLanguage(fallback.to_string()))
-        }
-    }
+#[derive(Debug)]
+struct LanguageDeductionHelperS {
+    pub lid: LanguageIdentifier,
+    pub lang_name: String,
+    pub dir_path: PathBuf,
+    pub score: u8,
+}
 
 fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf) 
-    -> Result<(LanguageIdentifier, String), LanguageChoiceError> {
+    -> Result<Vec<LanguageDeductionHelperS>, LanguageChoiceError> {
         if !lang_dir.exists() || !lang_dir.is_dir() {
             return Err(LanguageChoiceError::NoLanguageFilesAt(
                     lang_dir.canonicalize()
@@ -333,41 +285,68 @@ fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf)
                     ));
         }
 
-
-        let (default_locale, default_dirname): (LanguageIdentifier, String) = 
-            if sys_locale::get_locale().is_some() {
-                    let s = sys_locale::get_locale().unwrap();
-                    eprintln!("{}", s);
-                    (s.parse()
-                        .expect("locale string to locale identifier failed."), s)
-            } else { (langid!("en"), "en".to_owned()) };
-
-        let deduced_lang_name: String;
-        let lang_loc = match lang_name {
-            Some(ln) => {
-                deduced_lang_name = ln.clone();
-                match ln.parse::<LanguageIdentifier>() {
-                    Ok(li) => {
-                        try_match_language(Some(&li), &default_locale, &lang_dir)?
-                    },
-                    Err(e) => {
-                        eprintln!("Wraning: {:?}", e);
-                        try_match_language(None, &default_locale, &lang_dir)?
-                    }
-                }
+        let (desired_lang_identifier, desired_dirname) = match &lang_name {
+            Some(lang) => {
+                (lang.parse::<LanguageIdentifier>()
+                    .expect(&format!("Parse {lang} as language identifier failed.")),
+                    lang.clone())
             },
-            None => {  
-                deduced_lang_name = default_dirname;
-                try_match_language(None, &default_locale, &lang_dir)?
+            None => {
+                let n = sys_locale::get_locale()
+                    .expect(&format!("Get system locale failed."));
+                let li = n.clone()
+                    .parse::<LanguageIdentifier>()
+                    .expect("System's default locale parses failed.");
+                (li, n)
             }
         };
-        Ok((lang_loc, deduced_lang_name))
-}
+
+        let available_langs = {
+            let mut available_langs = Vec::new();
+            let read_dir = fs::read_dir(lang_dir)
+                .expect(&format!("Read dir {:?} failed.", lang_dir));
+            for dir in read_dir {
+                let dir_ent = dir.expect(&format!("Read a dir entry in {:?} failed.", lang_dir));
+                let dir_path = dir_ent.path();
+
+                let dirname = {
+                    let os_name = dir_ent.file_name();
+                    os_name.to_str()
+                        .expect(&format!("OsString {:?} converts to String failed.", &os_name)).to_owned()
+                };
+                match &dirname.parse::<LanguageIdentifier>() {
+                    Ok(id) => {
+                        let tmp = LanguageDeductionHelperS {
+                            lid: id.clone(),
+                            lang_name: dirname,
+                            dir_path,
+                            score: language_matches_score(&id, &desired_lang_identifier)
+                        };
+                        available_langs.push(tmp);
+                    },
+                    Err(_e) => {
+                    }
+                }
+            }
+            available_langs.sort_by_cached_key(|a| { a.lang_name.clone() });
+            available_langs.sort_by(|a, b| { b.score.cmp(&a.score) });
+            available_langs
+        };
+        if !available_langs.is_empty() {
+            Ok(available_langs)
+        } else {
+            Err(LanguageChoiceError::LanguageNegotiatedFailed(desired_dirname, available_langs.into_iter()
+                    .map(|a| {
+                        a.lang_name
+                    })
+                    .collect()
+                    ))
+        }
+   }
 
 struct LanguageSystem {
     pub bundle: fluent::FluentBundle<FluentResource>,
     pub current_lang: LanguageIdentifier,
-    pub dir: PathBuf,
 }
 
 unsafe impl Sync for LanguageSystem {}
@@ -388,51 +367,45 @@ impl LanguageSystem {
             tmp.extend(lang_dir.split("/"));
             tmp
         };
-        let dir = lang_dir.clone();
 
 
-        let (lang, lang_dir_str) = resolve_desired_lang(desired_lang.clone(), &lang_dir)
-            .expect(&format!("fetch language {:?} failed.", desired_lang));
-    
-
-        let v = get_available_locales(&lang_dir).expect(
-            &format!("LanguageSystem::new: read dir {} failed.", fs::canonicalize(lang_dir).unwrap().to_string_lossy().into_owned() ));
-        let v = {
-            let mut tmp = vec![lang.clone()];
-            tmp.extend(v.into_iter().filter(|a| {*a != lang}));
-            tmp
-        };
+        let ordered_langs = resolve_desired_lang(desired_lang.clone(), &lang_dir)
+            .expect(&format!("fetch languages {:?} failed.", desired_lang));
+        let v = ordered_langs
+            .iter()
+            .map(|a| { a.lid.clone() })
+            .collect();
         let mut bundle = FluentBundle::new(v);
             
+        let desired_lang_helper_s = &ordered_langs.first().unwrap();
 
-        let lang_dir = { let mut l = dir.clone(); 
-            l.push(lang_dir_str); l};
+        { // add ftl files under desired directory to bundle.
+            let read_dir = fs::read_dir(&desired_lang_helper_s.dir_path)
+                .expect(&format!("read language dir {:?} failed", &desired_lang_helper_s.dir_path));
 
-        let read_dir = fs::read_dir(lang_dir)
-            .expect("read language dir failed");
-        for entry in read_dir {
-            if let Ok(dir_entry) = entry {
-                let path = dir_entry.path();
-                if path.is_file() && path.extension().is_some()
-                    && path.extension().unwrap() == "ftl" {
-                        {
-                            let mut f = fs::File::open(path)
-                                .expect("failed to open one of ftl files.");
-                            let mut s = String::new();
-                            f.read_to_string(&mut s).expect("read ftl file to string failed.");
-                            let r = FluentResource::try_new(s)
-                                .expect("Could not parse an FTL string.");
-                            bundle.add_resource(r)
-                                .expect("Failed to add FTL resources to the bundle.");
-                        }
+            for entry in read_dir {
+                if let Ok(dir_entry) = entry {
+                    let path = dir_entry.path();
+                    if path.is_file() && path.extension().is_some()
+                        && path.extension().unwrap() == "ftl" {
+                            {
+                                let mut f = fs::File::open(path)
+                                    .expect("failed to open one of ftl files.");
+                                let mut s = String::new();
+                                f.read_to_string(&mut s).expect("read ftl file to string failed.");
+                                let r = FluentResource::try_new(s)
+                                    .expect("Could not parse an FTL string.");
+                                bundle.add_resource(r)
+                                    .expect("Failed to add FTL resources to the bundle.");
+                                }
+                    }
                 }
             }
         }
 
         Self {
             bundle,
-            current_lang: lang,
-            dir,
+            current_lang: desired_lang_helper_s.lid.clone(),
         }
     }
 }
