@@ -46,12 +46,11 @@ struct LanguageDeductionHelperS {
     pub score: u8,
 }
 
-fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf) 
+fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf)
     -> Result<Vec<LanguageDeductionHelperS>, LanguageChoiceError> {
         if !lang_dir.exists() || !lang_dir.is_dir() {
             return Err(LanguageChoiceError::NoLanguageFilesAt(
-                    lang_dir.canonicalize()
-                    .unwrap()
+                    lang_dir
                     .to_string_lossy()
                     .into_owned()
                     ));
@@ -129,18 +128,54 @@ use std::sync::OnceLock;
 
 static LANG: OnceLock<Mutex<Arc<LanguageSystem>>> = OnceLock::new();
 
+static ENV_VARIABLE_NAME: &'static str = "RUST_RECURSIVELY_ACTION_PATH";
+#[cfg(target_os = "linux")]
+static HOME_APP_DIR: &'static str = ".local/share/rust_recursive_action";
+
+fn check_lang_dir(dir_str: &str) -> PathBuf {
+    let lang_dir_splitted = dir_str.split(std::path::MAIN_SEPARATOR_STR);
+
+    // If in current dir
+    {
+        let mut tmp = env::current_dir().expect("Get current dir failed.");
+        tmp.extend(lang_dir_splitted.clone());
+        if tmp.exists() {
+            return tmp;
+        }
+    }
+
+    // If setted in environment variable
+    {
+        if let Ok(rust_recursively_action_path) = env::var(ENV_VARIABLE_NAME) {
+            use std::str::FromStr;
+            #[allow(irrefutable_let_patterns)]
+            if let Ok(mut lang_dir) = PathBuf::from_str(&rust_recursively_action_path) {
+                lang_dir.extend(lang_dir_splitted.clone());
+                if lang_dir.exists() {
+                    return lang_dir;
+                }
+            }
+        }
+    }
+
+    // If `i18n/fluent` is at home directoru
+    {
+        if let Some(mut hd) = env::home_dir() {
+            hd.extend(HOME_APP_DIR.split(std::path::MAIN_SEPARATOR));
+            hd.extend(lang_dir_splitted.clone());
+            if hd.exists() {
+                return hd;
+            }
+        }
+    }
+
+    unimplemented!("");
+}
+
 impl LanguageSystem {
     pub fn new(desired_lang: Option<String>, lang_dir: Option<String>) -> Self {
-
-        let default_lang_dir_str = "i18n/fluent".to_owned();
-        let lang_dir = lang_dir.or(Some(default_lang_dir_str)).unwrap();
-        let lang_dir = {
-            let mut tmp = env::current_dir()
-                .expect("Get current dir failed.");
-            tmp.extend(lang_dir.split("/"));
-            tmp
-        };
-
+        let lang_dir = lang_dir.unwrap_or("i18n/fluent".to_string());
+        let lang_dir = check_lang_dir(&lang_dir);
 
         let ordered_langs = resolve_desired_lang(desired_lang.clone(), &lang_dir)
             .expect(&format!("fetch languages {:?} failed.", desired_lang));
@@ -149,7 +184,6 @@ impl LanguageSystem {
             .map(|a| { a.lid.clone() })
             .collect();
         let mut bundle = FluentBundle::new(v);
-            
         let desired_lang_helper_s = &ordered_langs.first().unwrap();
 
         { // add ftl files under desired directory to bundle.
@@ -159,8 +193,11 @@ impl LanguageSystem {
             for entry in read_dir {
                 if let Ok(dir_entry) = entry {
                     let path = dir_entry.path();
+                    let path_extension = path.extension()
+                        .expect("File extension is not correct")
+                        .to_string_lossy();
                     if path.is_file() && path.extension().is_some()
-                        && path.extension().unwrap() == "ftl" {
+                        && path_extension == "ftl" {
                             {
                                 let mut f = fs::File::open(path)
                                     .expect("failed to open one of ftl files.");
@@ -188,10 +225,11 @@ fn build_language_0<'a>(msg_key: &str) -> String {
     match LANG.get()
         .expect("Uninitialized language bundle.").lock() {
         Ok(bs) => {
-            
+
+            let expect_errmsg = format!("failed to find message {}", msg_key);
             let msg = bs.bundle
                 .get_message(msg_key)
-                .expect(&format!("failed to find message {msg_key}"));
+                .expect(&expect_errmsg);
             let mut errors = vec![];
             let pattern = msg.value()
                 .expect("Message has no value.");
@@ -206,11 +244,11 @@ fn build_language_0<'a>(msg_key: &str) -> String {
 
 fn build_language_1<'a, T>(msg_key: &str, arg_name: &str, v: T) -> String
     where T: Into<FluentValue<'a>> {
-    build_language(msg_key, 
+    build_language(msg_key,
         vec![(arg_name, v.into())])
 }
 
-fn build_language_fns<'a, F>(msg_key: &str, args_pairs_builders: Vec<(&str, F)>) -> String 
+fn build_language_fns<'a, F>(msg_key: &str, args_pairs_builders: Vec<(&str, F)>) -> String
 where F: FnOnce() -> FluentValue<'a>{
     let args_pairs: Vec<_> = args_pairs_builders.into_iter()
         .map(
@@ -225,26 +263,37 @@ where F: FnOnce() -> FluentValue<'a>{
 
 
 fn build_language<'a>(msg_key: &str, args_pairs: Vec<(&str, FluentValue)>) -> String {
-    if let Ok(bs) = LANG.get().expect("Uninitialized language bundle.").lock() {
-        let msg = bs
-            .bundle
-            .get_message(msg_key)
-            .expect("failed to find message {msg_key}");
+    match LANG.get() {
+        Some(lang) => {
+            match lang.lock() {
+                Ok(bs) => {
+                    let expect_errmsg = format!("failed to find message {}", msg_key);
+                    let msg = bs
+                        .bundle
+                        .get_message(msg_key)
+                        .expect(&expect_errmsg);
 
-        let pattern = msg.value()
-            .expect("Message has no value");
+                    let pattern = msg.value()
+                        .expect("Message has no value");
 
-        let mut args  = FluentArgs::new();
-        for kv in args_pairs {
-            args.set(kv.0, 
-                kv.1);
+                    let mut args  = FluentArgs::new();
+                    for kv in args_pairs {
+                        args.set(kv.0,
+                            kv.1);
+                    }
+
+                    let mut errors = vec![];
+                    let value = bs.bundle.format_pattern(pattern, Some(&args), &mut errors);
+                    value.to_string()
+                },
+                Err(e) => {
+                    panic!("Language bundle mutex poisoned {e:?}")
+                }
+            }
+        },
+        None => {
+            panic!("Uninitialized lang bundle")
         }
-
-        let mut errors = vec![];
-        let value = bs.bundle.format_pattern(pattern, Some(&args), &mut errors);
-        value.to_string()
-    } else {
-        panic!("Language bundle mutex poisoned")
     }
 }
 
@@ -285,18 +334,20 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
     let mut marked_pathes = Vec::<PathBuf>::new();
 
-    let path = std::fs::canonicalize(&path_str);
-    if path.is_err() {
-        panic!("{}", &build_language_fns("file-path-canonized-failed", vec![(
-                "path_dir", || {
-                    FluentValue::from(path_str)
-                }
-        )]));
-    }
+    let path = match std::fs::canonicalize(&path_str) {
+        Ok(p) => p,
+        Err(e) => {
+            panic!("{}", &build_language_fns("file-path-canonicalized-failed", vec![(
+                        "path_dir", || {
+                            FluentValue::from(path_str)
+                        }
+            )]));
+        }
+    };
 
-    dir_pathes.push(path.unwrap());
+    dir_pathes.push(path);
     dir_sizes.push(1);
- 
+
     loop {
         let mut marked_cargo_dir = false;
         if dir_pathes.is_empty() { break; }
@@ -308,7 +359,7 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
         let sub_items = fs::read_dir(dir_path)
             .expect(
-                &build_language_1("read-directory-failed", "dir_path", 
+                &build_language_1("read-directory-failed", "dir_path",
                     dir_path.to_str()
                     ))
             .map(|a| {
@@ -338,7 +389,7 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
                     .to_str()
                     .expect(
                         &build_language_0("osstring-to-string-failed"))
-                    .starts_with(".") 
+                    .starts_with(".")
                     && a.metadata()
                     .expect(&build_language_0("get-metadata-error"))
                     .is_dir()
@@ -349,8 +400,8 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
                 .to_str()
                 .expect(&build_language_0("osstring-to-string-failed"));
             if marked_cargo_dir {
-                file_name != "target" 
-                && file_name != "src" 
+                file_name != "target"
+                && file_name != "src"
             } else {
                 true
             }
@@ -368,7 +419,7 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
         if *dir_sizes.last().unwrap() == 0 {
             dir_sizes.pop();
         }
- 
+
         dir_pathes.pop();
         dir_pathes.extend(sub_items);
     }
@@ -441,7 +492,7 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType, subcmd: GeneratingSub
     let dest_dir_str = cargo_dir.to_str()
         .expect(&build_language_0("pathbuf-to-str-failed"));
 
-    let subcmd = { 
+    let subcmd = {
         let tmp: &'static str = subcmd.into();
         let s = String::from(tmp);
         s.to_lowercase()
@@ -510,7 +561,7 @@ fn main() {
 
     let marked_pathes = get_cargo_directories(&path_str);
 
-    if ge_ty == GeneratingType::BashCommands 
+    if ge_ty == GeneratingType::BashCommands
         || ge_ty == GeneratingType::DryRunDebug {
             let msg_key = "root-path";
             let mut args_pairs = vec![];
@@ -550,10 +601,10 @@ fn main() {
 
     match ge_ty {
         GeneratingType::RunAsSubprocess => {
-            
+
             failed_list.iter()
                 .for_each(|a| {
-                    
+
                     println!("{{");
                     println!("code: {}", a.code.map_or_else(|| "None".to_owned(), |a| {format!("{}", a)}));
                     println!("stdout: {}",
@@ -570,7 +621,7 @@ fn main() {
                     );
                     println!("}}");
                 });
-                
+
         //    println!("{:?}", failed_list);
         }
         _ => {}

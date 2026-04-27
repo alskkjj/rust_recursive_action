@@ -1,5 +1,5 @@
-file-path-canonicalized-failed = Failed to make path { $path_dir } canonizalized.
-root-path = "# Root Path: { $root_path }"
+file-path-canonicalized-failed = Failed to make path `{ $path_dir }` canonizalized, make sure the path inputed is a real directory.
+root-path = # Root Path: { $root_path }
 read-directory-failed = Read directory { $dir_path } failed.
 read-directory-entry-failed = Read directory entry failed.
 get-file-name-failed = Get file name failed.

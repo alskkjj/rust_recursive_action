@@ -1,4 +1,4 @@
-file-path-canonicalized-failed = 獲得完整路徑{ $path_dir }失敗。
+file-path-canonicalized-failed = 獲得完整路徑`{ $path_dir }`失敗。
 root-path = 根目錄: { $root_path }。
 read-directory-failed = 讀取檔案夾{ $dir_path }失敗。
 read-directory-entry-failed = 讀取檔案夾項目失敗。
