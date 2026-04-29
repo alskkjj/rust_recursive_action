@@ -1,349 +1,38 @@
+mod errors;
+mod language_helpers;
+
 use std::fs;
 use std::path::PathBuf;
-use std::{env, io};
+use std::{env, };
 
 use std::process::Command;
-use std::string::FromUtf8Error;
 use clap::{Parser, ValueEnum, builder::PossibleValue};
+use fluent::FluentValue;
+use snafu::prelude::*;
 
-use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
-use unic_langid::LanguageIdentifier;
-use sys_locale;
 use strum::IntoStaticStr;
 
-use std::sync::{Mutex, Arc};
-use std::io::Read;
+use language_helpers as lh;
+use errors::*;
 
-
-/// fluent functions
-#[derive(Debug, )]
-enum LanguageChoiceError {
-    IoError(io::Error),
-    NoLanguageFilesAt(String),
-    LanguageNegotiatedFailed(String, Vec<String>, ),
-}
-
-impl From<io::Error> for LanguageChoiceError {
-    fn from(e: io::Error) -> Self {
-        Self::IoError(e)
-    }
-}
-
-fn language_matches_score(l1: &LanguageIdentifier, l2: &LanguageIdentifier) -> u8 {
-    let mut base = 0u8;
-    base |= if l1.matches(l2, false, false) { 0b1000 } else { 0 };
-    base |= if l1.matches(l2, false, true) { 0b0100 } else { 0 };
-    base |= if l1.matches(l2, true, false) { 0b0010 } else { 0 };
-    base |= if l1.matches(l2, true, true) { 0b0001 } else { 0 };
-    base
-}
-
-#[derive(Debug)]
-struct LanguageDeductionHelperS {
-    pub lid: LanguageIdentifier,
-    pub lang_name: String,
-    pub dir_path: PathBuf,
-    pub score: u8,
-}
-
-fn resolve_desired_lang(lang_name: Option<String>, lang_dir: &PathBuf)
-    -> Result<Vec<LanguageDeductionHelperS>, LanguageChoiceError> {
-        if !lang_dir.exists() || !lang_dir.is_dir() {
-            return Err(LanguageChoiceError::NoLanguageFilesAt(
-                    lang_dir
-                    .to_string_lossy()
-                    .into_owned()
-                    ));
-        }
-
-        let (desired_lang_identifier, desired_dirname) = match &lang_name {
-            Some(lang) => {
-                (lang.parse::<LanguageIdentifier>()
-                    .expect(&format!("Parse {lang} as language identifier failed.")),
-                    lang.clone())
-            },
-            None => {
-                let n = sys_locale::get_locale()
-                    .expect(&format!("Get system locale failed."));
-                let li = n.clone()
-                    .parse::<LanguageIdentifier>()
-                    .expect("System's default locale parses failed.");
-                (li, n)
-            }
-        };
-
-        let available_langs = {
-            let mut available_langs = Vec::new();
-            let read_dir = fs::read_dir(lang_dir)
-                .expect(&format!("Read dir {:?} failed.", lang_dir));
-            for dir in read_dir {
-                let dir_ent = dir.expect(&format!("Read a dir entry in {:?} failed.", lang_dir));
-                let dir_path = dir_ent.path();
-
-                let dirname = {
-                    let os_name = dir_ent.file_name();
-                    os_name.to_str()
-                        .expect(&format!("OsString {:?} converts to String failed.", &os_name)).to_owned()
-                };
-                match &dirname.parse::<LanguageIdentifier>() {
-                    Ok(id) => {
-                        let tmp = LanguageDeductionHelperS {
-                            lid: id.clone(),
-                            lang_name: dirname,
-                            dir_path,
-                            score: language_matches_score(&id, &desired_lang_identifier)
-                        };
-                        available_langs.push(tmp);
-                    },
-                    Err(_e) => {
-                    }
-                }
-            }
-            available_langs.sort_by_cached_key(|a| { a.lang_name.clone() });
-            available_langs.sort_by(|a, b| { b.score.cmp(&a.score) });
-            available_langs
-        };
-        if !available_langs.is_empty() {
-            Ok(available_langs)
-        } else {
-            Err(LanguageChoiceError::LanguageNegotiatedFailed(desired_dirname, available_langs.into_iter()
-                    .map(|a| {
-                        a.lang_name
-                    })
-                    .collect()
-                    ))
-        }
-   }
-
-struct LanguageSystem {
-    pub bundle: fluent::FluentBundle<FluentResource>,
-    pub current_lang: LanguageIdentifier,
-    pub current_lang_dir_path: PathBuf,
-}
-
-unsafe impl Sync for LanguageSystem {}
-unsafe impl Send for LanguageSystem {}
-
-use std::sync::OnceLock;
-
-static LANG: OnceLock<Mutex<Arc<LanguageSystem>>> = OnceLock::new();
-
-static ENV_VARIABLE_NAME: &'static str = "RUST_RECURSIVELY_ACTION_PATH";
-#[cfg(target_os = "linux")]
-static HOME_APP_DIR: &'static str = ".local/share/rust_recursive_action";
-
-fn check_lang_dir(dir_str: &str) -> PathBuf {
-    let lang_dir_splitted = dir_str.split(std::path::MAIN_SEPARATOR_STR);
-
-    // If in current dir
-    {
-        let mut tmp = env::current_dir().expect("Get current dir failed.");
-        tmp.extend(lang_dir_splitted.clone());
-        if tmp.exists() {
-            return tmp;
-        }
-    }
-
-    // If setted in environment variable
-    {
-        if let Ok(rust_recursively_action_path) = env::var(ENV_VARIABLE_NAME) {
-            use std::str::FromStr;
-            #[allow(irrefutable_let_patterns)]
-            if let Ok(mut lang_dir) = PathBuf::from_str(&rust_recursively_action_path) {
-                lang_dir.extend(lang_dir_splitted.clone());
-                if lang_dir.exists() {
-                    return lang_dir;
-                }
-            }
-        }
-    }
-
-    // If `i18n/fluent` is at home directoru
-    {
-        if let Some(mut hd) = env::home_dir() {
-            hd.extend(HOME_APP_DIR.split(std::path::MAIN_SEPARATOR));
-            hd.extend(lang_dir_splitted.clone());
-            if hd.exists() {
-                return hd;
-            }
-        }
-    }
-
-    unimplemented!("");
-}
-
-impl LanguageSystem {
-    pub fn new(desired_lang: Option<String>, lang_dir: Option<String>) -> Self {
-        let lang_dir = lang_dir.unwrap_or("i18n/fluent".to_string());
-        let lang_dir = check_lang_dir(&lang_dir);
-
-        let ordered_langs = resolve_desired_lang(desired_lang.clone(), &lang_dir)
-            .expect(&format!("fetch languages {:?} failed.", desired_lang));
-        let v = ordered_langs
-            .iter()
-            .map(|a| { a.lid.clone() })
-            .collect();
-        let mut bundle = FluentBundle::new(v);
-        let desired_lang_helper_s = &ordered_langs.first().unwrap();
-
-        { // add ftl files under desired directory to bundle.
-            let read_dir = fs::read_dir(&desired_lang_helper_s.dir_path)
-                .expect(&format!("read language dir {:?} failed", &desired_lang_helper_s.dir_path));
-
-            for entry in read_dir {
-                if let Ok(dir_entry) = entry {
-                    let path = dir_entry.path();
-                    let path_extension = path.extension()
-                        .expect("File extension is not correct")
-                        .to_string_lossy();
-                    if path.is_file() && path.extension().is_some()
-                        && path_extension == "ftl" {
-                            {
-                                let mut f = fs::File::open(path)
-                                    .expect("failed to open one of ftl files.");
-                                let mut s = String::new();
-                                f.read_to_string(&mut s).expect("read ftl file to string failed.");
-                                let r = FluentResource::try_new(s)
-                                    .expect("Could not parse an FTL string.");
-                                bundle.add_resource(r)
-                                    .expect("Failed to add FTL resources to the bundle.");
-                                }
-                    }
-                }
-            }
-        }
-
-        Self {
-            bundle,
-            current_lang: desired_lang_helper_s.lid.clone(),
-            current_lang_dir_path: desired_lang_helper_s.dir_path.clone(),
-        }
-    }
-}
-
-fn build_language_0<'a>(msg_key: &str) -> String {
-    match LANG.get()
-        .expect("Uninitialized language bundle.").lock() {
-        Ok(bs) => {
-
-            let expect_errmsg = format!("failed to find message {}", msg_key);
-            let msg = bs.bundle
-                .get_message(msg_key)
-                .expect(&expect_errmsg);
-            let mut errors = vec![];
-            let pattern = msg.value()
-                .expect("Message has no value.");
-            let v = bs.bundle.format_pattern(pattern, None, &mut errors);
-            v.to_string()
-        },
-        Err(e) => {
-            panic!("Language bundle mutext poisoned. {e}");
-        }
-    }
-}
-
-fn build_language_1<'a, T>(msg_key: &str, arg_name: &str, v: T) -> String
-    where T: Into<FluentValue<'a>> {
-    build_language(msg_key,
-        vec![(arg_name, v.into())])
-}
-
-fn build_language_fns<'a, F>(msg_key: &str, args_pairs_builders: Vec<(&str, F)>) -> String
-where F: FnOnce() -> FluentValue<'a>{
-    let args_pairs: Vec<_> = args_pairs_builders.into_iter()
-        .map(
-            |a| {
-            (a.0,
-             a.1())
-            }
-            )
-        .collect();
-    build_language(msg_key, args_pairs)
-}
-
-
-fn build_language<'a>(msg_key: &str, args_pairs: Vec<(&str, FluentValue)>) -> String {
-    match LANG.get() {
-        Some(lang) => {
-            match lang.lock() {
-                Ok(bs) => {
-                    let expect_errmsg = format!("failed to find message {}", msg_key);
-                    let msg = bs
-                        .bundle
-                        .get_message(msg_key)
-                        .expect(&expect_errmsg);
-
-                    let pattern = msg.value()
-                        .expect("Message has no value");
-
-                    let mut args  = FluentArgs::new();
-                    for kv in args_pairs {
-                        args.set(kv.0,
-                            kv.1);
-                    }
-
-                    let mut errors = vec![];
-                    let value = bs.bundle.format_pattern(pattern, Some(&args), &mut errors);
-                    value.to_string()
-                },
-                Err(e) => {
-                    panic!("Language bundle mutex poisoned {e:?}")
-                }
-            }
-        },
-        None => {
-            panic!("Uninitialized lang bundle")
-        }
-    }
-}
-
-pub fn init_lang(desired_lang: Option<String>, lang_dir: Option<String>) {
-    if LANG
-        .set(Mutex::new(
-                Arc::new(LanguageSystem::new(desired_lang, lang_dir))))
-            .is_err()  {
-                panic!("set initialized Language system failed.");
-    }
-}
-
-
-
-#[derive(Debug, )]
-enum ToUtf8Error {
-    UTF8DecodeError(FromUtf8Error),
-}
-
-impl From<FromUtf8Error> for ToUtf8Error {
-    fn from(e: FromUtf8Error) -> Self {
-        Self::UTF8DecodeError(e)
-    }
-}
-
-fn convert_to_utf8(bytes: &[u8]) -> Result<String, ToUtf8Error> {
-    // TODO: more portable encoding
-    match String::from_utf8(bytes.to_vec()) {
-        Ok(o) => { Ok(o) },
-        Err(e) => { Err(ToUtf8Error::from(e)) }
-    }
-}
-
-fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
+fn get_cargo_directories(path_str: &str) -> Result<Vec<PathBuf>> {
     let mut dir_pathes = Vec::<PathBuf>::new();
     // save the last index of every directory's subitems in dir_pathes
     let mut dir_sizes = Vec::<usize>::new();
 
     let mut marked_pathes = Vec::<PathBuf>::new();
 
-    let path = match std::fs::canonicalize(&path_str) {
-        Ok(p) => p,
-        Err(e) => {
-            panic!("{}", &build_language_fns("file-path-canonicalized-failed", vec![(
+    let path = fs::canonicalize(&path_str)
+        .context(CanonilizingSnafu {
+            dynamic_errmsg:
+                lh::build_language_fns(
+                    "file-path-canonicalized-failed",
+                    vec![(
                         "path_dir", || {
-                            FluentValue::from(path_str)
+                            fluent::FluentValue::from(path_str)
                         }
-            )]));
-        }
-    };
+                    )])
+        })?;
 
     dir_pathes.push(path);
     dir_sizes.push(1);
@@ -352,31 +41,40 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
         let mut marked_cargo_dir = false;
         if dir_pathes.is_empty() { break; }
 
-        // The algorithm has bugs if unwrap fails.
         let dir_path = dir_pathes
             .last()
-            .unwrap();
+            .context(AtleastOneInStackSnafu {
+                dynamic_errmsg:
+                    "The algorithm has logical bugs if unwrap fails."
+                    .to_string()
+            })?;
 
-        let sub_items = fs::read_dir(dir_path)
-            .expect(
-                &build_language_1("read-directory-failed", "dir_path",
-                    dir_path.to_str()
-                    ))
-            .map(|a| {
-                a.expect(
-                    &build_language_0("read-directory-entry-failed")
-                    )
-                    .path()
-            })
-        .collect::<Vec<PathBuf>>();
-
+        let sub_items = {
+            let dir_iter = fs::read_dir(dir_path)
+            .context(ReadDirSnafu {
+                dynamic_errmsg: lh::build_language_1(
+                                    "read-directory-failed",
+                                    "dir_path",
+                                    dir_path.to_str()
+                                )})?;
+            let mut ps = vec![];
+            for dirent in dir_iter {
+                let p = dirent.context(
+                    DirEntrySnafu {
+                        dynamic_errmsg: lh::build_language_0("read-directory-entry-failed")
+                    })?
+                    .path();
+                ps.push(p);
+            }
+            ps
+        };
 
         if sub_items.iter().any(|a| {
-            a.as_path().file_name()
-                .expect(&build_language_0("get-file-name-failed"))
+            "Cargo.toml" == a.as_path().file_name()
+                .expect(&lh::build_language_0("get-file-name-failed"))
                 .to_str()
                 .expect(
-                    &build_language_0("osstring-to-string-failed")) == "Cargo.toml"
+                    &lh::build_language_0("osstring-to-string-failed"))
         }) {
            marked_pathes.push(dir_pathes.last().unwrap().clone());
            marked_cargo_dir = true;
@@ -384,24 +82,27 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
 
         let sub_items = sub_items.iter()
             .filter(|a| {
-                !a.as_path().file_name()
-                    .expect(&build_language_0("get-file-name-failed"))
+                // filter the directories that name start with . out
+                // meanwhile filter the no-directories out.
+                !a.as_path()
+                    .file_name()
+                    .expect(&lh::build_language_0("get-file-name-failed"))
                     .to_str()
                     .expect(
-                        &build_language_0("osstring-to-string-failed"))
+                        &lh::build_language_0("osstring-to-string-failed"))
                     .starts_with(".")
                     && a.metadata()
-                    .expect(&build_language_0("get-metadata-error"))
+                    .expect(&lh::build_language_0("get-metadata-error"))
                     .is_dir()
             })
         .filter(|a| {
+            // excluding the `target` and `src` directories
             let file_name = a.as_path().file_name()
-                .expect(&build_language_0("get-file-name-failed"))
+                .expect(&lh::build_language_0("get-file-name-failed"))
                 .to_str()
-                .expect(&build_language_0("osstring-to-string-failed"));
+                .expect(&lh::build_language_0("osstring-to-string-failed"));
             if marked_cargo_dir {
-                file_name != "target"
-                && file_name != "src"
+                file_name != "target" && file_name != "src"
             } else {
                 true
             }
@@ -424,7 +125,7 @@ fn get_cargo_directories(path_str: &str) -> Vec<PathBuf> {
         dir_pathes.extend(sub_items);
     }
 
-    return marked_pathes;
+    return Ok(marked_pathes);
 }
 
 #[derive(PartialEq, Debug, Default, Clone, Copy, Eq, PartialOrd, Ord, )]
@@ -445,18 +146,18 @@ impl ValueEnum for GeneratingType {
             Self::BashCommands => {
                 PossibleValue::new("bash-commands")
                     .help(
-                        &build_language_0("generate-bash-like-cmds-helper"))
+                        &lh::build_language_0("generate-bash-like-cmds-helper"))
                     .aliases(["cmd", "cmds", "bash_cmds", "bash_commands"])
             }
             Self::RunAsSubprocess => {
                 PossibleValue::new("run-as-subprocess")
                     .help(
-                        &build_language_0("directly-run-helper"))
+                        &lh::build_language_0("directly-run-helper"))
                     .aliases(["direct", "subprocess", "directly"])
             }
             Self::DryRunDebug => {
                 PossibleValue::new("dry-run-debug")
-                    .help(&build_language_0("dry-run-helper"))
+                    .help(&lh::build_language_0("dry-run-helper"))
                     .aliases(["dry_run", "dry-run", "dr"])
             }
         })
@@ -464,33 +165,14 @@ impl ValueEnum for GeneratingType {
 }
 
 
-#[derive(Debug)]
-struct ProcessExitError {
-    code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-#[derive(Debug)]
-enum ProcessDirError {
-    IoError(std::io::Error),
-    ProcessExitError(
-        ProcessExitError)
-}
-
-impl From<std::io::Error> for ProcessDirError {
-    fn from(e: std::io::Error) -> Self {
-        Self::IoError(e)
-    }
-}
-
-fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType, subcmd: GeneratingSubcommand, ) -> Result<(), ProcessDirError> {
-    let old_dir = env::current_dir()?;
+fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType, subcmd: GeneratingSubcommand, ) -> Result<()> {
+    let old_dir = std::env::current_dir()
+        .context(CurrentDirSnafu)?;
 
     let old_dir_str = old_dir.to_str()
-        .expect(&build_language_0("pathbuf-to-str-failed"));
+        .expect(&lh::build_language_0("pathbuf-to-str-failed"));
     let dest_dir_str = cargo_dir.to_str()
-        .expect(&build_language_0("pathbuf-to-str-failed"));
+        .expect(&lh::build_language_0("pathbuf-to-str-failed"));
 
     let subcmd = {
         let tmp: &'static str = subcmd.into();
@@ -506,20 +188,24 @@ fn process_dir(cargo_dir: &PathBuf, ge_ty: GeneratingType, subcmd: GeneratingSub
             Ok(())
         },
         GeneratingType::RunAsSubprocess => {
-            env::set_current_dir(cargo_dir)?;
+            env::set_current_dir(cargo_dir)
+                    .context(CurrentDirSnafu)?;
 
             let output = Command::new("cargo").arg(&subcmd)
                 .output()
-                .expect(&build_language_1("start-cargo-subcommand-failed", "subcommand", subcmd));
+                .expect(&lh::build_language_1("start-cargo-subcommand-failed", "subcommand", subcmd));
             if !output.status.success() {
-                env::set_current_dir(old_dir)?;
-                return Err(ProcessDirError::ProcessExitError(ProcessExitError {
+                env::set_current_dir(old_dir)
+                    .context(CurrentDirSnafu)?;
+
+                return Err(Error::ProcessExit {
                     code: output.status.code(),
                     stdout: output.stdout,
                     stderr: output.stderr,
-                }))
+                });
             }
-            env::set_current_dir(old_dir)?;
+            env::set_current_dir(old_dir)
+                .context(CurrentDirSnafu)?;
             Ok(())
         },
         GeneratingType::DryRunDebug => {
@@ -551,15 +237,23 @@ struct Cli {
 }
 
 fn main() {
-    init_lang(None, None);
+    lh::init_lang(None, None);
 
     let cli = Cli::parse();
-    let path_str = cli.target_dir.or(Some("./".to_owned())).unwrap();
+    let path_str = cli.target_dir.unwrap_or("./".to_string());
     let ge_ty = cli.generating_type;
 
     let mut failed_list = Vec::new();
 
-    let marked_pathes = get_cargo_directories(&path_str);
+    let marked_pathes =
+        match get_cargo_directories(&path_str) {
+            Ok(o) => {
+                o
+            },
+            Err(e) => {
+                panic!("{:?}", e)
+            }
+        };
 
     if ge_ty == GeneratingType::BashCommands
         || ge_ty == GeneratingType::DryRunDebug {
@@ -578,21 +272,31 @@ fn main() {
                         })
                 );
             args_pairs.push(args_pair);
-            println!("{}", build_language(msg_key, args_pairs));
+            println!("{}", lh::build_language(msg_key, args_pairs));
     }
 
     marked_pathes
         .iter()
         .for_each(|a| {
             match process_dir(a, ge_ty.clone(), cli.generating_subcommand) {
-                Ok(_) => {},
+                Ok(_) => {
+                    // printed/start processes in function `process_dir`
+                },
                 Err(pde) => {
                     match pde {
-                        ProcessDirError::IoError(ie) => {
-                            panic!("{:?}", ie);
+                        Error::CurrentDir {
+                            ..
+                        } => {
+                            panic!("read/set current dir failed: {:?}", pde);
                         },
-                        ProcessDirError::ProcessExitError(pee) => {
-                            failed_list.push(pee);
+                        Error::ProcessExit {
+                            ..
+                        } => {
+                            // record the failed processes
+                            failed_list.push(pde);
+                        }
+                        _ => {
+                            panic!("{:?}", pde)
                         }
                     }
                 }
@@ -601,28 +305,24 @@ fn main() {
 
     match ge_ty {
         GeneratingType::RunAsSubprocess => {
-
-            failed_list.iter()
-                .for_each(|a| {
-
-                    println!("{{");
-                    println!("code: {}", a.code.map_or_else(|| "None".to_owned(), |a| {format!("{}", a)}));
-                    println!("stdout: {}",
-                        match convert_to_utf8(&a.stdout) {
-                            Ok(s) => s.to_owned(),
-                            Err(e) => format!("{:?}", e)
-                        }
-                    );
-                    println!("stderr: {}",
-                        match convert_to_utf8(&a.stderr) {
-                            Ok(s) => s.to_owned(),
-                            Err(e) => format!("{:?}", e)
-                        }
-                    );
-                    println!("}}");
-                });
-
-        //    println!("{:?}", failed_list);
+            failed_list.iter().for_each(|a| {
+                match a {
+                    Error::ProcessExit {
+                        code,
+                        stdout,
+                        stderr,
+                    } => {
+                        println!("{{");
+                        println!("  code: {}", code.map_or_else(|| "None".to_owned(), |a| {format!("{}", a)}));
+                        println!("  stdout: {:?}", String::from_utf8_lossy(stdout));
+                        println!("  stderr: {:?}", String::from_utf8_lossy(stderr));
+                        println!("}}");
+                    }
+                    _ => {
+                        // do nothing
+                    }
+                }
+            });
         }
         _ => {}
     }

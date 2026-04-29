@@ -1,12 +1,13 @@
 [package]
 name = "rust_recursively_action"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.26", features = ["cargo", "derive"] }
 fluent = "0.16.1"
 intl-memoizer = "0.5.2"
+snafu = { version = "0.9.0", features = ["backtrace"] }
 strum = { version = "0.26.3", features = ["derive", "strum_macros"] }
 sys-locale = "0.3.2"
 unic-langid = { version = "0.9.5", features = ["unic-langid-macros"] }
