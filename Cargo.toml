@@ -2,6 +2,14 @@
 name = "rust_recursively_action"
 version = "0.1.1"
 edition = "2024"
+authors = ["Alskkjj wyhwow1995@gmail.com"]
+license = "GPL v3.0"
+description = "A tool to clean/update the cargo projects, recursively from root directory to leaf, and avoid directories: `src`, `\\.*`, `target`"
+readme = "README.md"
+homepage = "https://github.com/alskkjj/rust_recursive_action"
+repository = "https://github.com/alskkjj/rust_recursive_action"
+keywords = ["clean", "cargo", "update"]
+categories = ["tools"]
 
 [dependencies]
 clap = { version = "4.5.26", features = ["cargo", "derive"] }
