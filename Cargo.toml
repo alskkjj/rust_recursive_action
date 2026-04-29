@@ -9,7 +9,7 @@ readme = "README.md"
 homepage = "https://github.com/alskkjj/rust_recursive_action"
 repository = "https://github.com/alskkjj/rust_recursive_action"
 keywords = ["clean", "cargo", "update"]
-categories = ["Development tools"]
+categories = ["development-tools"]
 
 [dependencies]
 clap = { version = "4.5.26", features = ["cargo", "derive"] }
