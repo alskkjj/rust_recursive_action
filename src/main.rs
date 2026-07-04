@@ -92,7 +92,11 @@ fn get_cargo_directories(path_str: &str) -> Result<Vec<PathBuf>> {
                         &lh::build_language_0("osstring-to-string-failed"))
                     .starts_with(".")
                     && a.metadata()
-                    .expect(&lh::build_language_0("get-metadata-error"))
+                    .expect(&lh::build_language_1(
+                                    "get-metadata-error",
+                                    "dir_path",
+                                    dir_path.to_str()
+                                ))
                     .is_dir()
             })
         .filter(|a| {
